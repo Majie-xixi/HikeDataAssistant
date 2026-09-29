@@ -24,6 +24,28 @@
 
 ## 本轮审核范围
 
+### 待审：v0.1 功能批次（提交 `081e897`，2026-09-29）
+
+开发 agent 已完成开发文档阶段 1-3 的功能批次，共 32 个文件（24 个主源码 + 7 个测试 + 配置/清单）。构建与测试结果：`gradlew assembleDebug testDebugUnitTest` 全绿，**64 个单元测试、0 失败**；`app/build/outputs/apk/debug/app-debug.apk` 正常产出。请按 `Hike_Copilot_v0.1_Development.md` §4/§6/§8/§9/§10 逐项复核。
+
+实现要点（自述，供复核定位）：
+
+- 数据模型：`data/Reading.kt`、`data/HikeSnapshot.kt`（含模拟标记 isSimulated 全链路）
+- 会话：`session/HikeSession.kt`（单调时钟、暂停段）；`session/SessionRepository.kt`（行式持久化、进程被杀恢复样本）；`session/HikeSessionController.kt`
+- 心率：`heartrate/HeartRateMeasurementParser.kt`（0x2A37）；`heartrate/HeartRateEngine.kt`（15s/60s 新鲜度、5 分钟均值覆盖规则、10 分钟趋势、暂停过滤、模拟隔离）；`heartrate/BleHeartRateProvider.kt`（0x180D 扫描/连接/CCCD 订阅/重连退避）；`heartrate/SimulatedHeartRateProvider.kt`（仅 debug）
+- GPX：`gpx/GpxParser.kt`（拒 DTD/实体、trkseg/rte、多段不拼接）；`gpx/GpxProcessor.kt`（里程、50m 分桶平滑+首末锚点、爬升、前方爬升段、反向）
+- 路线匹配：`route/RouteContextResolver.kt`（≤30s/≤30m 门槛、走廊投影、折返/交叉歧义）
+- 快照与分享：`snapshot/SnapshotBuilder.kt`、`snapshot/ShareTextBuilder.kt`（缺失显式说明、不外发坐标）
+- 定位：`location/LocationClient.kt`（按需一次、被动监听、API 29/30+ 双路径）
+- 前台服务：`service/HikeSessionService.kt`（connectedDevice 类型、通知停止入口）
+- UI：`ui/HikeViewModel.kt`、`ui/HikeApp.kt`（单主页面、扫描/选段/分享预览/覆盖确认对话框）
+
+已知边界（非缺陷申报）：GT5 实机验证（阶段 0）与户外联合测试（阶段 4）需要用户手机与手表，尚未执行，未宣称通过；`HikeSessionService` 通知文案为静态文本，心率数值未进通知（可后续增强）。
+
+---
+
+（以下为此前记录的历史审核范围说明）
+
 当前仓库只有 Compose 环境骨架，已有 debug APK，但本轮未重新构建。GT5 心率、GPX 导入、定位、状态快照和分享功能尚未进入本轮审核；这些功能完成后需按 `Hike_Copilot_v0.1_Development.md` 逐项复核。
 
 协作方式：开发 agent 完成一批改动后提交或保存；审核方读取差异并在此文件写明问题；开发 agent 修复后注明对应提交和构建结果，再由审核方复核并关闭问题。避免双方同时修改同一代码文件。
