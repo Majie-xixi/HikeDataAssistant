@@ -226,8 +226,12 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleRouteDirection() {
         val segment = routeSegment ?: return
         val newReversed = !_uiState.value.routeReversed
+        // 先持久化再切换内存模型：保存失败则保持原方向，避免"界面已反、重启复原"的不一致
+        if (!controller.repository.saveRoute(segment, newReversed)) {
+            _uiState.update { it.copy(toastMessage = "方向切换保存失败，已保持原方向") }
+            return
+        }
         routeModel = processor.build(segment, newReversed)
-        controller.repository.saveRoute(segment, newReversed)
         refreshRouteContext()
         _uiState.update { it.copy(routeReversed = newReversed) }
     }
