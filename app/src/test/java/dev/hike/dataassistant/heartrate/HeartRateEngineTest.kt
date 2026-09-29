@@ -186,5 +186,37 @@ class HeartRateEngineTest {
         assertNull(reading.value)
         assertNull(engine.avg5MinBpm(nowMonoMs = clock.now))
         assertTrue(engine.trend10Min(nowMonoMs = clock.now + 20 * 60_000) is HeartRateTrend.Accumulating)
+        assertNull(engine.sessionStats())
     }
+
+    @Test
+    fun `sessionStats summarizes real active samples only`() {
+        feed(12) // t=0..710s 每 10 秒一个样本，bpm 120 递增到 191
+        val stats = engine.sessionStats()!!
+        assertEquals(120, stats.minBpm)
+        assertEquals(191, stats.maxBpm)
+        assertEquals(72, stats.activeSamples)
+        assertEquals(11, stats.coverageMinutes)
+        // (120+191)*72/2 = 11196，均值取整 155
+        assertEquals(155, stats.avgBpm)
+    }
+
+    @Test
+    fun `sessionStats ignores samples received during pause`() {
+        val paused = 5 * 60 * 1000L..8 * 60 * 1000L
+        val engineWithPause = HeartRateEngine(clock, isRecordingAt = { mono -> mono !in paused })
+        clock.now = 0
+        var t = 0
+        while (t < 10 * 60) {
+            clock.now = t * 1000L
+            val bpm = if (monoIn(t * 1000L, paused)) 200 else 120
+            engineWithPause.onSample(bpm, wallMs = clock.now)
+            t += 10
+        }
+        val stats = engineWithPause.sessionStats()!!
+        assertEquals(120, stats.minBpm)
+        assertEquals(120, stats.maxBpm)
+    }
+
+    private fun monoIn(v: Long, range: LongRange): Boolean = v in range
 }

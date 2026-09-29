@@ -65,6 +65,8 @@ data class UiState(
     val toastMessage: String? = null,
     val restoreNotice: String? = null,
     val pendingSegments: List<GpxTrackSegment> = emptyList(),
+    /** 多段 GPX 选段时的名称回退（metadata 名/文件名），选中后仍有效。 */
+    val pendingSegmentFallbackName: String? = null,
     val debugSimAvailable: Boolean = false
 ) {
     val scanning: Boolean get() = hrConnection == HrConnectionState.SCANNING
@@ -194,6 +196,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
                             _uiState.update {
                                 it.copy(
                                     pendingSegments = parsed.segments,
+                                    pendingSegmentFallbackName = parsed.trackName ?: queryDisplayName(uri),
                                     toastMessage = "该 GPX 含 ${parsed.segments.size} 个轨迹段，请选择一个连续段"
                                 )
                             }
@@ -212,11 +215,13 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pickSegment(index: Int) {
         val segment = _uiState.value.pendingSegments.getOrNull(index) ?: return
-        _uiState.update { it.copy(pendingSegments = emptyList()) }
-        applySegment(segment, segment.name)
+        val fallback = _uiState.value.pendingSegmentFallbackName
+        _uiState.update { it.copy(pendingSegments = emptyList(), pendingSegmentFallbackName = null) }
+        applySegment(segment, segment.name ?: fallback)
     }
 
-    fun cancelSegmentPick() = _uiState.update { it.copy(pendingSegments = emptyList()) }
+    fun cancelSegmentPick() =
+        _uiState.update { it.copy(pendingSegments = emptyList(), pendingSegmentFallbackName = null) }
 
     fun toggleRouteDirection() {
         val segment = routeSegment ?: return
@@ -383,7 +388,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
         }
         routeSegment = namedSegment
         routeModel = model
-        controller.repository.saveRoute(namedSegment, reversed = false)
+        val saved = controller.repository.saveRoute(namedSegment, reversed = false)
         _uiState.update {
             it.copy(
                 routeName = effectiveName,
@@ -391,8 +396,9 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
                 routeHasElevation = model.totalClimbMeters != null,
                 routeReversed = false,
                 restoreNotice = null,
-                toastMessage = "路线已导入：${effectiveName ?: "未命名"}，" +
-                    "总长 ${String.format(java.util.Locale.US, "%.1f", model.totalMeters / 1000)} km"
+                toastMessage = ("路线已导入：${effectiveName ?: "未命名"}，" +
+                    "总长 ${String.format(java.util.Locale.US, "%.1f", model.totalMeters / 1000)} km" +
+                    if (saved) "" else "（本地保存失败，App 重启后需重新导入）")
             )
         }
         refreshRouteContext()

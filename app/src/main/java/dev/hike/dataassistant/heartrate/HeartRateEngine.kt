@@ -121,6 +121,42 @@ class HeartRateEngine(
     @Synchronized
     fun realSampleCount(): Int = realSamples.size
 
+    /** 本次记录（引擎上次 clear 以来）的会话级心率统计；有效样本不足时返回 null。 */
+    data class SessionHrStats(
+        val minBpm: Int,
+        val maxBpm: Int,
+        val avgBpm: Int,
+        val activeSamples: Int,
+        val coverageMinutes: Int
+    )
+
+    @Synchronized
+    fun sessionStats(): SessionHrStats? {
+        var min = Int.MAX_VALUE
+        var max = Int.MIN_VALUE
+        var sum = 0L
+        var count = 0
+        var oldest = Long.MAX_VALUE
+        var newest = Long.MIN_VALUE
+        for (s in realSamples) {
+            if (!isRecordingAt(s.receivedAtMonotonicMs)) continue
+            min = minOf(min, s.bpm)
+            max = maxOf(max, s.bpm)
+            sum += s.bpm
+            count++
+            oldest = minOf(oldest, s.receivedAtMonotonicMs)
+            newest = maxOf(newest, s.receivedAtMonotonicMs)
+        }
+        if (count < MIN_WINDOW_SAMPLES) return null
+        return SessionHrStats(
+            minBpm = min,
+            maxBpm = max,
+            avgBpm = (sum / count).toInt(),
+            activeSamples = count,
+            coverageMinutes = ((newest - oldest) / 60_000L).toInt()
+        )
+    }
+
     @Synchronized
     fun clear() {
         realSamples.clear()

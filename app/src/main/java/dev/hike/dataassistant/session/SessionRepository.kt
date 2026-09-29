@@ -116,10 +116,12 @@ class SessionRepository(context: Context) {
 
     // ---------- 路线 ----------
 
+    /** 原子保存：先写临时文件再整体替换；失败保留旧文件并返回 false。 */
     @Synchronized
-    fun saveRoute(segment: GpxTrackSegment, reversed: Boolean) {
-        try {
-            routeFile.outputStream().use { out ->
+    fun saveRoute(segment: GpxTrackSegment, reversed: Boolean): Boolean {
+        val tmp = File(routeFile.parentFile, "last_route.txt.tmp")
+        return try {
+            tmp.outputStream().use { out ->
                 out.write(
                     ("v1|rt|${(segment.name ?: "").replace('|', '/')}|${if (reversed) 1 else 0}\n")
                         .toByteArray(Charsets.UTF_8)
@@ -128,8 +130,18 @@ class SessionRepository(context: Context) {
                     val ele = p.eleMeters?.let { "%.3f".format(java.util.Locale.US, it) } ?: ""
                     out.write(("v1|pt|${p.lat}|${p.lon}|$ele\n").toByteArray(Charsets.UTF_8))
                 }
+                out.flush()
+            }
+            // Linux/Android 上 rename 会原子替换目标文件；失败则清理临时文件
+            if (tmp.renameTo(routeFile)) {
+                true
+            } else {
+                tmp.delete()
+                false
             }
         } catch (_: Exception) {
+            tmp.delete()
+            false
         }
     }
 

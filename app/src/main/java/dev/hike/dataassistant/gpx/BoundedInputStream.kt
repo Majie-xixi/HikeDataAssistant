@@ -11,23 +11,22 @@ class BoundedInputStream(
 
     private var read = 0L
 
+    private fun limitExceeded(): Nothing = throw GpxParseException("文件超过大小上限（$maxBytes 字节）")
+
     override fun read(): Int {
-        ensureBudget(1)
+        if (read >= maxBytes) limitExceeded()
         val b = super.read()
         if (b >= 0) read += 1
         return b
     }
 
     override fun read(b: ByteArray, off: Int, len: Int): Int {
-        ensureBudget(1)
-        val n = super.read(b, off, len)
+        if (read >= maxBytes) limitExceeded()
+        // 批量读取也受剩余预算约束，不允许一次越过上限
+        val allowed = minOf(len.toLong(), maxBytes - read).toInt()
+        if (allowed <= 0) limitExceeded()
+        val n = super.read(b, off, allowed)
         if (n > 0) read += n
         return n
-    }
-
-    private fun ensureBudget(next: Int) {
-        if (read + next > maxBytes) {
-            throw GpxParseException("文件超过 ${maxBytes / (1024 * 1024)} MB 上限")
-        }
     }
 }

@@ -20,6 +20,10 @@ class SnapshotBuilder(
     private val processor: GpxProcessor,
     private val resolver: RouteContextResolver
 ) {
+    companion object {
+        /** 低于该时长（秒）不尝试负荷判断。 */
+        const val MIN_LOAD_JUDGMENT_SECONDS: Long = 120
+    }
 
     fun build(
         session: HikeSession?,
@@ -45,6 +49,14 @@ class SnapshotBuilder(
 
         val avg5 = engine.avg5MinBpm(nowMonoMs)
         val trend = if (elapsedSeconds == null) null else engine.trend10Min(nowMonoMs)
+        val sessionHr = engine.sessionStats()
+
+        // 数据不足判定：会话太短或心率覆盖不足时，明确告知暂不能判断负荷
+        if (elapsedSeconds != null &&
+            (elapsedSeconds < MIN_LOAD_JUDGMENT_SECONDS || (sessionHr?.coverageMinutes ?: 0) < 2)
+        ) {
+            notes.add("记录时间太短或心率覆盖不足，暂不能判断负荷")
+        }
 
         val locationAgeMs = location?.sampledAtEpochMs?.let { nowWallMs - it }
         val match = resolver.resolve(routeModel, location?.value, locationAgeMs)
@@ -79,10 +91,12 @@ class SnapshotBuilder(
             heartRate = heartRate,
             heartRateAvg5Min = avg5,
             heartRateTrend = trend,
+            sessionHr = sessionHr,
             location = locationReading,
             routeMatchStatus = match.status,
             routePositionMeters = atMeters,
             routeTotalMeters = routeModel?.totalMeters,
+            routeTotalClimbMeters = routeModel?.totalClimbMeters,
             plannedRemainingMeters = remaining,
             plannedRemainingClimbMeters = remainingClimb,
             nextClimb = nextClimb,
