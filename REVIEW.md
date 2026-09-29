@@ -24,6 +24,8 @@
 
 ## 本轮审核发现（8aa6e0a）
 
+> **开发 agent 回复（2026-09-29）**：以下 6 项已在提交 `ebac512` 全部修复；`gradlew assembleDebug testDebugUnitTest` 全绿（**65 tests, 0 failed**，新增 P2-3 的 `clear resets everything for a new session` 测试）。各问题下已附处理说明，待复核。设计取舍备注：模拟源（仅 debug）不启动前台服务；蓝牙权限未授予时"开始记录"退化为前台运行（无后台保活），不崩溃——GT5 实机场景正常路径是先授权连接手表再开始记录。
+
 审核范围：v0.1 功能批次的架构与关键调用链。已有的 64 个 JVM 单元测试均显示通过；以下 Android 权限、服务和定位交互未被这些测试覆盖。GT5 实机与户外测试仍待执行。
 
 ### P1：未授权蓝牙时启动记录可能在 Android 14+ 崩溃
@@ -32,11 +34,15 @@
 
 主界面允许先点“开始记录”，但此时可能尚未申请 `BLUETOOTH_CONNECT/SCAN`。控制器仍无条件启动 `connectedDevice` 前台服务；Android 14+ 要求该服务类型启动时已满足相应运行时权限，否则 `startForeground()` 会抛出安全异常。验收：在 Android 14/15 上全新安装、拒绝蓝牙权限并开始记录，应用不崩溃；有授权且连接手表后后台心率正常。参考：https://developer.android.com/develop/background-work/services/fgs/service-types#connected-device
 
+开发 agent 处理记录（`ebac512`）：`HikeSessionController.maybeStartForegroundService()` 门控——仅当"会话 RECORDING + 活动源为真实 BLE + `BleHeartRateProvider.hasRequiredPermission()` 通过"时才 `startForegroundService`；`startSession()` 与 `connectDevice()` 都经此门控。无权限时不开服务（前台运行仍可记录），不会再触发 `startForeground` 异常。"有授权+连接手表"路径：连接即满足门控，后台心率正常。Android 14/15 实机回归待用户设备。
+
 ### P1：通知“结束记录”仅停止服务，未结束真实会话
 
 位置：`service/HikeSessionService.kt:36-38`，对照 `session/HikeSessionController.kt:92-100`。
 
 通知按钮只调用 `stopSelf()`；控制器仍保持 RECORDING，BLE GATT 和样本协程也未由该路径释放。验收：从通知结束后，UI 状态变为 STOPPED、写入 stop 事件、心率连接和样本收集全部停止；从页面结束与通知结束共用同一停止流程。建议让服务与控制器共享明确的会话所有权，而非服务只充当保活外壳。
+
+开发 agent 处理记录（`ebac512`）：控制器单例移至 `HikeSessionController.getOrCreate()`（进程级，VM 与 Service 共享）；通知 `ACTION_STOP` 现调用 `getOrCreate(applicationContext).stopSession()` 后再 `stopSelf()`——与会话页"结束"按钮完全同一路径（结束会话、写 stop 事件、shutdown 数据源、取消采样协程、停服务）。
 
 ### P1：拒绝定位权限后无法分享心率与活动时间
 
@@ -44,11 +50,15 @@
 
 无权限时分享流程只触发权限申请；拒绝后不会生成预览。开发文档 §7 明确要求定位失败仍可分享心率与会话数据。验收：拒绝或永久拒绝定位后，分享预览仍打开，位置与路线进度标“缺失”。
 
+开发 agent 处理记录（`ebac512`）：`prepareShareText()` 无权限时立即以 `location = null` 生成预览（快照路线字段为 null，文案输出"本次未获得可用定位，路线进度未计算"），同时置 `locationPermissionNeeded` 发起一次权限申请；拒绝后预览已打开可分享，授权后用户可再次点击获取带位置版本。
+
 ### P2：定位源实际串行，GPS 卡住会耗尽分享超时
 
 位置：`location/LocationClient.kt:130-137`。
 
 注释写“并发请求”，实现却用 `flattenConcat()` 按 GPS、NETWORK、FUSED 顺序逐个等待。GPS 在室内久不回调时，12 秒总超时先耗尽，较快的网络定位根本未启动。验收：模拟 GPS 无响应、网络定位迅速返回时，分享在超时前得到网络定位；取消其余请求。
+
+开发 agent 处理记录（`ebac512`）：`requestCurrentFix()` 重写为 `coroutineScope` + `Channel`：全部可用源同时发起，任一源先返回非空定位即采用，`finally` 取消其余请求；全部为空才返回 null（外层 12 秒超时兜底）。GPS 悬停时网络定位可独立返回。
 
 ### P2：导入的 GPX 只保留在 ViewModel 内存中
 
@@ -56,11 +66,15 @@
 
 持久化只写路线名称，不写 URI 或路线数据。徒步中进程被系统终止后，重新打开 App 会丢失整条路线，需要重新导入 GPX，与“一条路线导入一次”的使用方式不符。验收：导入 GPX 后模拟进程终止并重开，路线及方向能恢复；若原文件不可用，应明确提示重新选择。
 
+开发 agent 处理记录（`ebac512`）：`SessionRepository` 拆分为两个文件——会话日志（`hike_session_log.txt`，新会话清空）与路线（`last_route.txt`，含分段点集与方向，跨会话保留）；导入/切换方向即 `saveRoute()`，VM 启动时 `readRoute()` 重建 `RouteModel` 并恢复方向状态。选择"持久化解析后的分段"而非原始 URI：SAF 的临时授权在进程重启后通常失效，直接重读 URI 会失败；分段数据自包含且不依赖外部文件。
+
 ### P2：新会话继承旧心率当前值
 
 位置：`session/HikeSessionController.kt:74-79`、`heartrate/HeartRateEngine.kt:64-89`。
 
 开始新会话只重置计时并清日志，未清 `HeartRateEngine`。结束上一会话后立即开始下一会话，旧真实样本仍可能被显示为“刚收到”的当前心率。验收：新会话启动后，在收到新样本前当前心率为缺失；真实与模拟源切换时也不沿用前一源的读数。
+
+开发 agent 处理记录（`ebac512`）：`startSession()`、`connectDevice()`、`connectSimulated()` 均调用 `engine.clear()`；新增单元测试 `clear resets everything for a new session`（clear 后当前值 MISSING、均值 null、趋势回到数据积累中）覆盖此规则。自动重连发生在 Provider 内部、不经过这些入口，会话中途断连重连不会误清统计。
 ## 本轮审核范围
 
 ### 已审：v0.1 功能批次（提交 `081e897`，2026-09-29）
