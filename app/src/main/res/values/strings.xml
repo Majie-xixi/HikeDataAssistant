@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">徒步数据助手</string>
+    <string name="notification_title">徒步记录中</string>
+    <string name="notification_text">正在后台接收心率与计时</string>
+    <string name="notification_stop">结束记录</string>
 </resources>
