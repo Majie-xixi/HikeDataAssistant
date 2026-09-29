@@ -311,6 +311,9 @@ class BleHeartRateProvider(
         }
     }
 
+    /** 供前台服务启动前判定：Android 14+ connectedDevice 类型要求的运行时权限。 */
+    fun hasRequiredPermission(): Boolean = hasBluetoothPermission()
+
     private fun hasBluetoothPermission(): Boolean {
         val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)

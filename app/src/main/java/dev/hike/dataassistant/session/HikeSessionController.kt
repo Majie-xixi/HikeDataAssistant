@@ -9,7 +9,9 @@ import dev.hike.dataassistant.heartrate.HeartRateProvider
 import dev.hike.dataassistant.heartrate.SimulatedHeartRateProvider
 import dev.hike.dataassistant.service.HikeSessionService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -58,8 +60,10 @@ class HikeSessionController(
     fun connectDevice(address: String) {
         useSimulatedSource = false
         engine.simulatedEnabled = false
+        engine.clear() // 换源不沿用前一源的读数
         attachProvider(bleProvider)
         bleProvider.connect(address)
+        maybeStartForegroundService()
     }
 
     /** 仅 debug 构建：启用模拟心率源。 */
@@ -67,16 +71,18 @@ class HikeSessionController(
         val sim = simulatedProvider ?: return
         useSimulatedSource = true
         engine.simulatedEnabled = true
+        engine.clear()
         attachProvider(sim)
         sim.connect("simulated")
     }
 
     fun startSession() {
-        if (repository.hasData()) repository.clear() // UI 在调用前已向用户确认覆盖
+        if (repository.hasSessionData()) repository.clearSessionLog() // UI 在调用前已向用户确认覆盖
         session.reset()
         session.start()
         repository.appendEvent("start")
-        context.startForegroundService(Intent(context, HikeSessionService::class.java))
+        engine.clear() // 新会话不继承上一会话的心率读数
+        maybeStartForegroundService()
     }
 
     fun pauseSession() {
@@ -98,5 +104,32 @@ class HikeSessionController(
         activeProvider = null
         sampleJob?.cancel()
         context.stopService(Intent(context, HikeSessionService::class.java))
+    }
+
+    /**
+     * 前台服务（connectedDevice 类型）只在同时满足以下条件时启动：
+     * 会话记录中、数据源为真实 BLE、蓝牙运行时权限已授予。
+     * Android 14+ 在未授予相应权限时以该类型 startForeground 会抛安全异常，
+     * 因此无权限时退化为前台运行（无后台保活），不崩溃。
+     * 模拟源（仅 debug）不启动前台服务。
+     */
+    private fun maybeStartForegroundService() {
+        if (session.state != SessionState.RECORDING) return
+        if (useSimulatedSource) return
+        if (activeProvider !== bleProvider) return
+        if (!bleProvider.hasRequiredPermission()) return
+        context.startForegroundService(Intent(context, HikeSessionService::class.java))
+    }
+
+    companion object {
+        /** 进程级单例：Activity/Service 重建与通知操作共享同一会话状态。 */
+        fun getOrCreate(context: Context): HikeSessionController =
+            controllerRef ?: HikeSessionController(
+                context.applicationContext,
+                CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            ).also { controllerRef = it }
+
+        @Volatile
+        private var controllerRef: HikeSessionController? = null
     }
 }

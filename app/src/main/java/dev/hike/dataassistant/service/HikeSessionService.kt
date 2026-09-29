@@ -13,6 +13,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dev.hike.dataassistant.MainActivity
 import dev.hike.dataassistant.R
+import dev.hike.dataassistant.session.HikeSessionController
 
 /**
  * 前台服务（connectedDevice 类型）：会话记录期间保持心率接收，
@@ -34,6 +35,8 @@ class HikeSessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // 与页面"结束"按钮共用同一停止流程：结束会话、写 stop 事件、释放 BLE 与采样
+            HikeSessionController.getOrCreate(applicationContext).stopSession()
             stopSelf()
             return START_NOT_STICKY
         }

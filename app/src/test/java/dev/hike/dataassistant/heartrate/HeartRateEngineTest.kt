@@ -174,4 +174,17 @@ class HeartRateEngineTest {
         assertEquals(150, reading.value)
         assertTrue(reading.isSimulated)
     }
+
+    @Test
+    fun `clear resets everything for a new session`() {
+        feed(12) // 足够产生均值与趋势的数据
+        assertEquals(ReadingStatus.FRESH, engine.currentReading(nowWallMs = clock.now).status)
+        engine.clear()
+        // 新会话在收到新样本前：当前值缺失、无均值、趋势重新积累
+        val reading = engine.currentReading(nowWallMs = clock.now)
+        assertEquals(ReadingStatus.MISSING, reading.status)
+        assertNull(reading.value)
+        assertNull(engine.avg5MinBpm(nowMonoMs = clock.now))
+        assertTrue(engine.trend10Min(nowMonoMs = clock.now + 20 * 60_000) is HeartRateTrend.Accumulating)
+    }
 }

@@ -1,7 +1,6 @@
 package dev.hike.dataassistant.ui
 
 import android.app.Application
-import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -25,9 +24,7 @@ import dev.hike.dataassistant.session.HikeSessionController
 import dev.hike.dataassistant.session.SessionState
 import dev.hike.dataassistant.snapshot.ShareTextBuilder
 import dev.hike.dataassistant.snapshot.SnapshotBuilder
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -74,7 +71,7 @@ data class UiState(
 
 class HikeViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val controller = getOrCreateController(app)
+    private val controller = HikeSessionController.getOrCreate(app)
 
     private val processor = GpxProcessor()
     private val resolver = RouteContextResolver()
@@ -96,6 +93,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         restoreIfInterrupted()
+        restoreRoute()
         observeHeartRate()
         observeTicker()
         viewModelScope.launch {
@@ -219,35 +217,35 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
         val segment = routeSegment ?: return
         val newReversed = !_uiState.value.routeReversed
         routeModel = processor.build(segment, newReversed)
-        controller.repository.appendRoute(routeModel?.segmentName ?: "")
+        controller.repository.saveRoute(segment, newReversed)
         refreshRouteContext()
         _uiState.update { it.copy(routeReversed = newReversed) }
     }
 
     // ---------- 分享 ----------
 
-    private var pendingShareQuestion: String? = null
-
-    /** 整理并问 ChatGPT：主动取一次新定位（短暂等待），再生成可编辑文案。 */
+    /**
+     * 整理并问 ChatGPT：主动取一次新定位（短暂等待），再生成可编辑文案。
+     * 定位权限缺失/被拒时仍生成"仅心率与会话"的预览（文档 §7），
+     * 同时发起一次权限申请，授权后用户可再次点击获取带位置的版本。
+     */
     fun prepareShareText(question: String) {
-        pendingShareQuestion = question
         if (!locationClient.hasPermission()) {
             _uiState.update { it.copy(locationPermissionNeeded = true) }
+            _sharePreview.value = buildShareText(question, location = null)
             return
         }
         _uiState.update { it.copy(busyMessage = "正在获取新位置（最多 12 秒）…") }
         viewModelScope.launch {
             latestLocation = locationClient.getCurrentPosition(timeoutMs = 12_000)
             _uiState.update { it.copy(busyMessage = null) }
-            _sharePreview.value = buildShareText(question)
+            _sharePreview.value = buildShareText(question, location = latestLocation)
         }
     }
 
-    /** 定位授权成功后继续被打断的分享流程。 */
+    /** 定位授权结果：拒绝不重试（预览已用无定位版打开）；授权后允许被动监听。 */
     fun retryShareAfterPermission() {
         _uiState.update { it.copy(locationPermissionNeeded = false) }
-        pendingShareQuestion?.let(::prepareShareText)
-        pendingShareQuestion = null
     }
 
     fun dismissSharePreview() {
@@ -262,7 +260,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 内部 ----------
 
     private fun restoreIfInterrupted() {
-        val restored = controller.repository.readAll() ?: return
+        val restored = controller.repository.readSession() ?: return
         if (restored.interrupted) {
             restored.samples.forEach { s ->
                 controller.engine.onSample(s.bpm, s.receivedAtEpochMs, s.contactDetected, s.isSimulated)
@@ -277,8 +275,24 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         } else if (restored.samples.isEmpty()) {
-            controller.repository.clear()
+            controller.repository.clearSessionLog()
         }
+    }
+
+    /** 进程重启后恢复上次导入的路线与方向（跨会话保留）。 */
+    private fun restoreRoute() {
+        val restored = controller.repository.readRoute() ?: return
+        routeSegment = restored.segment
+        routeModel = processor.build(restored.segment, restored.reversed)
+        _uiState.update {
+            it.copy(
+                routeName = restored.segment.name,
+                routeTotalKm = routeModel?.totalMeters?.div(1000),
+                routeHasElevation = routeModel?.totalClimbMeters != null,
+                routeReversed = restored.reversed
+            )
+        }
+        refreshRouteContext()
     }
 
     private fun observeHeartRate() {
@@ -350,7 +364,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
     private fun applySegment(segment: GpxTrackSegment, fallbackName: String?) {
         routeSegment = segment
         routeModel = processor.build(segment, reversed = false)
-        controller.repository.appendRoute(segment.name ?: fallbackName ?: "")
+        controller.repository.saveRoute(segment, reversed = false)
         _uiState.update {
             it.copy(
                 routeName = segment.name ?: fallbackName,
@@ -374,8 +388,8 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
         } ?: throw GpxParseException("无法打开所选文件")
     }
 
-    private fun buildShareText(question: String): String {
-        val snapshot = buildSnapshot()
+    private fun buildShareText(question: String, location: Reading<PhonePosition>? = latestLocation): String {
+        val snapshot = buildSnapshot(location)
         return ShareTextBuilder.build(snapshot, _uiState.value.routeName, question)
     }
 
@@ -398,17 +412,5 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         // 会话存续时控制器由进程级作用域继续运行；VM 销毁只停止 UI 刷新
         super.onCleared()
-    }
-
-    companion object {
-        /** 进程级单例：Activity 重建/切换时心率与会话计时不断。 */
-        fun getOrCreateController(context: Context): HikeSessionController =
-            controllerRef ?: HikeSessionController(
-                context.applicationContext,
-                CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            ).also { controllerRef = it }
-
-        @Volatile
-        private var controllerRef: HikeSessionController? = null
     }
 }

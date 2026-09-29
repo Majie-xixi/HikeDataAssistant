@@ -1,6 +1,6 @@
 # 代码审核交接
 
-审核基线：`cfadba8`（Android 环境验证骨架）  
+最近审核基线：`8aa6e0a`（v0.1 功能批次）  
 审核日期：2026-09-29
 
 ## 待处理
@@ -9,11 +9,11 @@
 
 位置：`gradle/wrapper/gradle-wrapper.properties:3`
 
-审核基线中的 `distributionUrl` 指向 `D:/DevEnv/downloads/gradle-8.11.1-bin.zip`，其他机器通常没有此文件。当前工作区已改成 HTTPS 发行地址，但尚未看到不依赖 D 盘文件的构建验证。
+初始提交 `cfadba8` 的 `distributionUrl` 指向 `D:/DevEnv/downloads/gradle-8.11.1-bin.zip`，其他机器通常没有此文件。当前工作区已改成 HTTPS 发行地址，但尚未看到不依赖 D 盘文件的构建验证。
 
 处理要求：将仓库中的地址改为可公开获取的 Gradle 8.11.1 发行包地址，或团队可访问的镜像；本机离线包路径只保留在个人环境中。请在不依赖该 D 盘文件的环境下运行 `gradlew.bat assembleDebug`，记录结果。
 
-状态：待复核（已提交修复 `f6b0d6b`，构建验证通过，见下方开发记录）。
+状态：已解决（提交 `f6b0d6b`；已复核镜像 URL、SHA-256 配置和下载构建日志）。
 
 开发 agent 处理记录（2026-09-29）：
 
@@ -22,11 +22,50 @@
 - `networkTimeout` 10s → 120s。
 - 验证结果：构建期间将 `D:/DevEnv/downloads/gradle-8.11.1-bin.zip` 临时改名移走，`gradlew.bat assembleDebug` 从镜像下载发行包（sha256 校验通过）后 **BUILD SUCCESSFUL in 1m 2s（exit 0）**，随后恢复本地 zip。完整日志：`D:/DevEnv/tmp/p1_verify_build3.log`（镜像外环境可通过 `gradlew.bat assembleDebug` 复现，首次运行会重新下载约 130MB 发行包）。
 
+## 本轮审核发现（8aa6e0a）
+
+审核范围：v0.1 功能批次的架构与关键调用链。已有的 64 个 JVM 单元测试均显示通过；以下 Android 权限、服务和定位交互未被这些测试覆盖。GT5 实机与户外测试仍待执行。
+
+### P1：未授权蓝牙时启动记录可能在 Android 14+ 崩溃
+
+位置：`session/HikeSessionController.kt:74-79`、`service/HikeSessionService.kt:78`。
+
+主界面允许先点“开始记录”，但此时可能尚未申请 `BLUETOOTH_CONNECT/SCAN`。控制器仍无条件启动 `connectedDevice` 前台服务；Android 14+ 要求该服务类型启动时已满足相应运行时权限，否则 `startForeground()` 会抛出安全异常。验收：在 Android 14/15 上全新安装、拒绝蓝牙权限并开始记录，应用不崩溃；有授权且连接手表后后台心率正常。参考：https://developer.android.com/develop/background-work/services/fgs/service-types#connected-device
+
+### P1：通知“结束记录”仅停止服务，未结束真实会话
+
+位置：`service/HikeSessionService.kt:36-38`，对照 `session/HikeSessionController.kt:92-100`。
+
+通知按钮只调用 `stopSelf()`；控制器仍保持 RECORDING，BLE GATT 和样本协程也未由该路径释放。验收：从通知结束后，UI 状态变为 STOPPED、写入 stop 事件、心率连接和样本收集全部停止；从页面结束与通知结束共用同一停止流程。建议让服务与控制器共享明确的会话所有权，而非服务只充当保活外壳。
+
+### P1：拒绝定位权限后无法分享心率与活动时间
+
+位置：`ui/HikeViewModel.kt:232-238`、`ui/HikeApp.kt:83-88`。
+
+无权限时分享流程只触发权限申请；拒绝后不会生成预览。开发文档 §7 明确要求定位失败仍可分享心率与会话数据。验收：拒绝或永久拒绝定位后，分享预览仍打开，位置与路线进度标“缺失”。
+
+### P2：定位源实际串行，GPS 卡住会耗尽分享超时
+
+位置：`location/LocationClient.kt:130-137`。
+
+注释写“并发请求”，实现却用 `flattenConcat()` 按 GPS、NETWORK、FUSED 顺序逐个等待。GPS 在室内久不回调时，12 秒总超时先耗尽，较快的网络定位根本未启动。验收：模拟 GPS 无响应、网络定位迅速返回时，分享在超时前得到网络定位；取消其余请求。
+
+### P2：导入的 GPX 只保留在 ViewModel 内存中
+
+位置：`ui/HikeViewModel.kt:85-86,351-353`、`session/SessionRepository.kt:55-57`。
+
+持久化只写路线名称，不写 URI 或路线数据。徒步中进程被系统终止后，重新打开 App 会丢失整条路线，需要重新导入 GPX，与“一条路线导入一次”的使用方式不符。验收：导入 GPX 后模拟进程终止并重开，路线及方向能恢复；若原文件不可用，应明确提示重新选择。
+
+### P2：新会话继承旧心率当前值
+
+位置：`session/HikeSessionController.kt:74-79`、`heartrate/HeartRateEngine.kt:64-89`。
+
+开始新会话只重置计时并清日志，未清 `HeartRateEngine`。结束上一会话后立即开始下一会话，旧真实样本仍可能被显示为“刚收到”的当前心率。验收：新会话启动后，在收到新样本前当前心率为缺失；真实与模拟源切换时也不沿用前一源的读数。
 ## 本轮审核范围
 
-### 待审：v0.1 功能批次（提交 `081e897`，2026-09-29）
+### 已审：v0.1 功能批次（提交 `081e897`，2026-09-29）
 
-开发 agent 已完成开发文档阶段 1-3 的功能批次，共 32 个文件（24 个主源码 + 7 个测试 + 配置/清单）。构建与测试结果：`gradlew assembleDebug testDebugUnitTest` 全绿，**64 个单元测试、0 失败**；`app/build/outputs/apk/debug/app-debug.apk` 正常产出。请按 `Hike_Copilot_v0.1_Development.md` §4/§6/§8/§9/§10 逐项复核。
+开发 agent 已完成开发文档阶段 1-3 的功能批次，共 32 个文件（24 个主源码 + 7 个测试 + 配置/清单）。构建与测试结果：`gradlew assembleDebug testDebugUnitTest` 全绿，**64 个单元测试、0 失败**；`app/build/outputs/apk/debug/app-debug.apk` 正常产出。本轮已按 `Hike_Copilot_v0.1_Development.md` 的关键功能与架构要求复核；发现的问题见上方。
 
 实现要点（自述，供复核定位）：
 
@@ -56,13 +95,15 @@
 2. Codex 每 15 分钟检查本工程的 Git 提交和工作区差异。若没有新代码，保持安静。未提交且仍在编辑的文件，待写入稳定后再审核，避免审到半成品。
 3. 发现问题时，Codex 在本文件记录优先级、文件行号、影响、修复要求和验收方法，并通知用户。审核方只改本交接文件，不与开发 agent 同时修改产品代码。
 4. 开发 agent 修复后，在对应问题下补充提交号与构建或测试结果；Codex 在下次定期检查中复核，确认后标记“已解决”。未验证的问题保持“待复核”。
-5. 当前审核基线为 `cfadba8`。后续每次审核都记录新基线，避免重复报告。同一问题只有状态变化或出现新证据时才通知用户。
+5. 当前审核基线为 `8aa6e0a`。后续每次审核都记录新基线，避免重复报告。同一问题只有状态变化或出现新证据时才通知用户。
 
 这套流程按定时检查运行，不是文件一保存就立即触发。另一家公司的 agent 无法直接接收 Codex 消息，因此它需要按第 1 条定期读取本文件。
 
 ## 变更检测细则
 
-- 上次已审状态：提交 `cfadba8`，当时没有其他产品代码改动。当前未提交的代码属于下一轮待审内容。
+- 上次已审状态：提交 `8aa6e0a`，工作区无未提交代码；已跟踪的非 REVIEW/需求文档文件按“路径 + 小写 SHA-256”排序拼接，再取 SHA-256，内容指纹为 `7286dd96da9039055db545674546a99a21ee3ed4c9f83fc9904d088986b9a89b`。
 - 每轮读取 Git 当前提交号、已跟踪文件的实际差异，以及未跟踪源码文件的路径和内容哈希；排除 `REVIEW.md`、`.gradle/` 和 `build/` 等生成内容。
 - 审核完成时记录本轮提交号和代码内容指纹。下一轮指纹相同则跳过，即使 `git status` 仍显示未提交文件也不重复报告。
 - 文件刚写入或仍在变化时等待下一轮；审核只覆盖已经保存到该目录的内容，无法看到开发 agent 尚未保存的编辑。
+
+

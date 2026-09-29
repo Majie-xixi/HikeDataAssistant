@@ -14,16 +14,15 @@ import dev.hike.dataassistant.data.DataSources
 import dev.hike.dataassistant.data.PhonePosition
 import dev.hike.dataassistant.data.Reading
 import dev.hike.dataassistant.data.ReadingStatus
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.flattenConcat
-import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.Executors
 
@@ -126,14 +125,27 @@ class LocationClient(private val context: Context) {
         listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.FUSED_PROVIDER)
             .filter { locationManager.allProviders.contains(it) && locationManager.isProviderEnabled(it) }
 
-    /** 并发请求可用定位源，取最先返回的非空定位。 */
-    private suspend fun requestCurrentFix(): Location? {
+    /** 并发请求所有可用定位源，取最先返回的非空定位并取消其余。 */
+    private suspend fun requestCurrentFix(): Location? = coroutineScope {
         val providers = enabledProviders()
-        if (providers.isEmpty()) return null
-        val merged = providers.map { requestFromProvider(it) }
-            .asFlow()
-            .flattenConcat()
-        return merged.filterNotNull().firstOrNull()
+        if (providers.isEmpty()) return@coroutineScope null
+        val channel = Channel<Location?>(capacity = providers.size)
+        val jobs = providers.map { provider ->
+            launch { channel.send(requestFromProvider(provider).firstOrNull()) }
+        }
+        var result: Location? = null
+        try {
+            repeat(providers.size) {
+                val candidate = channel.receive()
+                if (candidate != null) {
+                    result = candidate
+                    return@coroutineScope result // finally 会取消其余请求
+                }
+            }
+        } finally {
+            jobs.forEach { it.cancel() }
+        }
+        result
     }
 
     private fun requestFromProvider(provider: String): Flow<Location?> = callbackFlow {
