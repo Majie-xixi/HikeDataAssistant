@@ -188,7 +188,7 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
                             }
 
                         parsed.segments.size == 1 ->
-                            applySegment(parsed.segments[0], parsed.trackName)
+                            applySegment(parsed.segments[0], parsed.trackName ?: queryDisplayName(uri))
 
                         else -> {
                             _uiState.update {
@@ -373,21 +373,44 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(toastMessage = "该轨迹段无法使用：${e.message}") }
             return
         }
-        routeSegment = segment
+        // 有效名称 = trk/rte 名 > metadata 名 > 文件名；都没有才显示"未命名路线"
+        val effectiveName = (segment.name ?: fallbackName?.trim()?.ifEmpty { null })
+        // 用有效名称持久化，进程重启后仍能显示
+        val namedSegment = if (effectiveName != null && segment.name == null) {
+            segment.copy(name = effectiveName)
+        } else {
+            segment
+        }
+        routeSegment = namedSegment
         routeModel = model
-        controller.repository.saveRoute(segment, reversed = false)
+        controller.repository.saveRoute(namedSegment, reversed = false)
         _uiState.update {
             it.copy(
-                routeName = segment.name ?: fallbackName,
+                routeName = effectiveName,
                 routeTotalKm = model.totalMeters / 1000,
                 routeHasElevation = model.totalClimbMeters != null,
                 routeReversed = false,
                 restoreNotice = null,
-                toastMessage = "路线已导入：${segment.name ?: fallbackName ?: "未命名"}，" +
+                toastMessage = "路线已导入：${effectiveName ?: "未命名"}，" +
                     "总长 ${String.format(java.util.Locale.US, "%.1f", model.totalMeters / 1000)} km"
             )
         }
         refreshRouteContext()
+    }
+
+    /** 读取所选文件的显示名（去掉扩展名）——两步路部分导出路线名只在文件名里。 */
+    private fun queryDisplayName(uri: Uri): String? = try {
+        getApplication<Application>().contentResolver
+            .query(uri, null, null, null, null)
+            ?.use { cursor ->
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+            }
+            ?.substringBeforeLast('.')
+            ?.trim()
+            ?.ifEmpty { null }
+    } catch (_: Exception) {
+        null
     }
 
     private fun parseGpxFile(uri: Uri): Result<dev.hike.dataassistant.gpx.ParsedGpx> = runCatching {
