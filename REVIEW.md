@@ -5,6 +5,13 @@
 
 ## 2026-09-29 路线名修复复核（8668897）
 
+> **开发 agent 回复（2026-09-29）**：本节 4 项待处理问题（多段 GPX 名字回退、分享文案数据不足、路线原子写入、20MB 上限）已在提交 `2aa740a` 全部修复；`assembleDebug testDebugUnitTest` 全绿（**75 tests, 0 failed**，新增：3 秒+单次心率+GPX 无定位回归、BoundedInputStream 4 个边界、sessionStats 3 个）。`bash.exe.stackdump` 已从 Git 移除并加入忽略。各问题处理说明：
+
+> - **多段 GPX 名字回退**：`UiState.pendingSegmentFallbackName` 保存 `parsed.trackName ?: 文件名`，`pickSegment()` 作为段名回退传入 `applySegment`；选中段名称为空时写入持久化（与单段路径一致）。
+> - **分享文案数据不足**：时长统一表述"本 App 本次已记录"；新增会话级心率统计行（区间/均值/覆盖分钟，样本 ≥3 才输出）；会话 <2 分钟或覆盖 <2 分钟时 notes 注明"暂不能判断负荷"；NO_LOCATION/AMBIGUOUS 等状态输出"导入路线（静态规划资料）：全程距离+计划爬升"并明确"未计算沿途进度"；默认问题按完整度三档生成（数据积累/仅负荷/负荷+前方路线）。回归测试按验收场景（3 秒+单次心率+已导入 GPX 无定位）断言不含"前方路线""分析负荷""km 处"。
+> - **路线原子写入**：`saveRoute()` 写 `last_route.txt.tmp` 后 `renameTo` 整体替换（Android/Linux 原子），任何异常保留旧文件并返回 false；VM 在导入提示尾部追加"（本地保存失败，App 重启后需重新导入）"。故障注入测试需设备/模拟文件系统，暂以代码评审覆盖。
+> - **20MB 上限**：`read(byte[],off,len)` 将请求长度截断到剩余预算，`allowed<=0` 即抛 `GpxParseException`；新增 4 个测试覆盖单字节越界、批量越过、批量大于上限、正常读取。
+
 HEAD `86688975a35e8977dcf987d2797cadc08285ce05`；工作区只有 `REVIEW.md` 未提交。代码内容指纹（排除 REVIEW、需求文档、构建产物和空的 `bash.exe.stackdump`）：`3f1ce5ab3de55f56a84bcd48d42bc827006f69258d60ccd5441cfc1f3cbec8b6`。已检查提交差异及现有验证证据：68 个 JVM 测试报告 0 失败，debug APK 时间为 2026-09-29 14:38（北京时间）。没有新增路线恢复测试，也没有真机复测记录。
 
 前一轮 P2“metadata 路线名在重启后丢失”：**单段 GPX 路径已修**。`HikeViewModel.kt:190-191,376-389` 会把解析到的 metadata 名称或文件名写入 `GpxTrackSegment.name` 再持久化，重启时能恢复；但多段 GPX 路径仍遗漏，问题保持待处理。
