@@ -53,6 +53,7 @@ class GpxParser(private val parser: XmlPullParser) {
         val openTags = ArrayDeque<String>()
         var sawGpx = false
         var topLevelName: String? = null
+        var metadataName: String? = null
         var trkName: String? = null
         var rteName: String? = null
         var segmentPoints: MutableList<GpxPoint>? = null // trkseg 或 rte 的活动点集
@@ -99,6 +100,7 @@ class GpxParser(private val parser: XmlPullParser) {
                     when (parser.name) {
                         "name" -> when (parent) {
                             "gpx" -> if (topLevelName == null) topLevelName = text.toString().trim().ifEmpty { null }
+                            "metadata" -> if (metadataName == null) metadataName = text.toString().trim().ifEmpty { null }
                             "trk" -> if (trkName == null) trkName = text.toString().trim().ifEmpty { null }
                             "rte" -> if (rteName == null) rteName = text.toString().trim().ifEmpty { null }
                         }
@@ -141,7 +143,7 @@ class GpxParser(private val parser: XmlPullParser) {
         }
 
         if (!sawGpx) throw GpxParseException("缺少 gpx 根元素")
-        val name = trkName ?: topLevelName
+        val name = trkName ?: rteName ?: metadataName ?: topLevelName
         return ParsedGpx(name, segments)
     }
 }

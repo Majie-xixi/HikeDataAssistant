@@ -128,4 +128,70 @@ class GpxParserTest {
         val parsed = parserFor("""<gpx version="1.1"></gpx>""")
         assertTrue(parsed.segments.isEmpty())
     }
+
+    // ---- 两步路真实导出的常见形态 ----
+
+    @Test
+    fun `name only in metadata is used as fallback`() {
+        val gpx = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <gpx version="1.1" creator="2bulu" xmlns="http://www.topografix.com/GPX/1/1">
+              <metadata><name>我的徒步路线</name></metadata>
+              <trk><trkseg>
+                <trkpt lat="30.0" lon="120.0"><ele>100</ele></trkpt>
+                <trkpt lat="30.001" lon="120.0"><ele>110</ele></trkpt>
+              </trkseg></trk>
+            </gpx>
+        """.trimIndent()
+        val parsed = parserFor(gpx)
+        assertEquals("我的徒步路线", parsed.trackName)
+        assertEquals(2, parsed.segments.single().points.size)
+    }
+
+    @Test
+    fun `gpx without any name still parses segments`() {
+        val gpx = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <gpx version="1.1" creator="2bulu" xmlns="http://www.topografix.com/GPX/1/1"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+              <trk><trkseg>
+                <trkpt lat="30.0" lon="120.0">
+                  <ele>100</ele>
+                  <time>2026-09-29T02:00:00Z</time>
+                </trkpt>
+                <trkpt lat="30.001" lon="120.0">
+                  <ele>110</ele>
+                  <time>2026-09-29T02:01:00Z</time>
+                </trkpt>
+              </trkseg></trk>
+            </gpx>
+        """.trimIndent()
+        val parsed = parserFor(gpx)
+        assertNull(parsed.trackName)
+        val segment = parsed.segments.single()
+        assertEquals(2, segment.points.size)
+        assertEquals(110.0, segment.points[1].eleMeters!!, 1e-6)
+    }
+
+    @Test
+    fun `extensions blocks are ignored`() {
+        val gpx = """
+            <gpx version="1.1" creator="2bulu" xmlns="http://www.topografix.com/GPX/1/1">
+              <trk>
+                <name>带扩展的路线</name>
+                <extensions><bulu_ext>whatever</bulu_ext></extensions>
+                <trkseg>
+                  <trkpt lat="30.0" lon="120.0"><ele>1</ele>
+                    <extensions><speed>1.2</speed></extensions>
+                  </trkpt>
+                  <trkpt lat="30.001" lon="120.0"><ele>2</ele></trkpt>
+                </trkseg>
+              </trk>
+            </gpx>
+        """.trimIndent()
+        val parsed = parserFor(gpx)
+        assertEquals("带扩展的路线", parsed.trackName)
+        assertEquals(2, parsed.segments.single().points.size)
+    }
 }

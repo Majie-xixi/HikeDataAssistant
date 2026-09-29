@@ -9,6 +9,7 @@ import dev.hike.dataassistant.data.PhonePosition
 import dev.hike.dataassistant.data.PlannedClimb
 import dev.hike.dataassistant.data.Reading
 import dev.hike.dataassistant.data.ReadingStatus
+import dev.hike.dataassistant.gpx.BoundedInputStream
 import dev.hike.dataassistant.gpx.GpxParseException
 import dev.hike.dataassistant.gpx.GpxParser
 import dev.hike.dataassistant.gpx.GpxProcessor
@@ -178,30 +179,34 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { parseGpxFile(uri) }
             _uiState.update { it.copy(busyMessage = null) }
-            when {
-                result.isFailure -> {
-                    val cause = result.exceptionOrNull()
-                    val message = if (cause is GpxParseException) cause.message else "GPX 导入失败"
-                    _uiState.update { it.copy(toastMessage = message) }
-                }
+            result.fold(
+                onSuccess = { parsed ->
+                    when {
+                        parsed.segments.isEmpty() ->
+                            _uiState.update {
+                                it.copy(toastMessage = "GPX 中没有可用轨迹段（只支持 trk/trkseg 或 rte）")
+                            }
 
-                result.getOrThrow().segments.isEmpty() ->
-                    _uiState.update { it.copy(toastMessage = "GPX 中没有可用轨迹段") }
+                        parsed.segments.size == 1 ->
+                            applySegment(parsed.segments[0], parsed.trackName)
 
-                else -> {
-                    val parsed = result.getOrThrow()
-                    if (parsed.segments.size == 1) {
-                        applySegment(parsed.segments[0], parsed.trackName)
-                    } else {
-                        _uiState.update {
-                            it.copy(
-                                pendingSegments = parsed.segments,
-                                toastMessage = "该 GPX 含 ${parsed.segments.size} 个轨迹段，请选择一个连续段"
-                            )
+                        else -> {
+                            _uiState.update {
+                                it.copy(
+                                    pendingSegments = parsed.segments,
+                                    toastMessage = "该 GPX 含 ${parsed.segments.size} 个轨迹段，请选择一个连续段"
+                                )
+                            }
                         }
                     }
+                },
+                onFailure = { cause ->
+                    // 带原因的失败提示：文件选择器返回异常大小时也会走到具体解析或上限错误
+                    _uiState.update {
+                        it.copy(toastMessage = "GPX 导入失败：${cause.message ?: cause.javaClass.simpleName}")
+                    }
                 }
-            }
+            )
         }
     }
 
@@ -362,18 +367,24 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun applySegment(segment: GpxTrackSegment, fallbackName: String?) {
+        val model = try {
+            processor.build(segment, reversed = false)
+        } catch (e: IllegalArgumentException) {
+            _uiState.update { it.copy(toastMessage = "该轨迹段无法使用：${e.message}") }
+            return
+        }
         routeSegment = segment
-        routeModel = processor.build(segment, reversed = false)
+        routeModel = model
         controller.repository.saveRoute(segment, reversed = false)
         _uiState.update {
             it.copy(
                 routeName = segment.name ?: fallbackName,
-                routeTotalKm = routeModel?.totalMeters?.div(1000),
-                routeHasElevation = routeModel?.totalClimbMeters != null,
+                routeTotalKm = model.totalMeters / 1000,
+                routeHasElevation = model.totalClimbMeters != null,
                 routeReversed = false,
                 restoreNotice = null,
                 toastMessage = "路线已导入：${segment.name ?: fallbackName ?: "未命名"}，" +
-                    "总长 ${String.format(java.util.Locale.US, "%.1f", (routeModel?.totalMeters ?: 0.0) / 1000)} km"
+                    "总长 ${String.format(java.util.Locale.US, "%.1f", model.totalMeters / 1000)} km"
             )
         }
         refreshRouteContext()
@@ -381,11 +392,16 @@ class HikeViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun parseGpxFile(uri: Uri): Result<dev.hike.dataassistant.gpx.ParsedGpx> = runCatching {
         val resolver = getApplication<Application>().contentResolver
-        val size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
-        require(size in 0..20L * 1024 * 1024) { "GPX 文件异常（大小 $size 字节）" }
-        resolver.openInputStream(uri)?.use { input ->
-            GpxParser().parse(input)
-        } ?: throw GpxParseException("无法打开所选文件")
+        // 部分文档提供器返回 UNKNOWN_LENGTH(-1)，不据此判失败；
+        // 大小上限在读取时流式强制（超过 20MB 抛出）
+        val descriptor = resolver.openAssetFileDescriptor(uri, "r")
+            ?: throw GpxParseException("无法打开所选文件")
+        descriptor.use { fd ->
+            resolver.openInputStream(uri)?.use { raw ->
+                val bounded = BoundedInputStream(raw, maxBytes = 20L * 1024 * 1024)
+                GpxParser().parse(bounded)
+            } ?: throw GpxParseException("无法读取所选文件")
+        }
     }
 
     private fun buildShareText(question: String, location: Reading<PhonePosition>? = latestLocation): String {

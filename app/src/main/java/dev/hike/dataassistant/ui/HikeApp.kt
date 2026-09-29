@@ -250,7 +250,8 @@ private fun RestoreNoticeCard(text: String) {
 private fun RouteCard(state: UiState, onToggleDirection: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            if (state.routeName == null) {
+            // 以路线模型是否存在判断（GPX 可以没有名字，不能拿名字当存在性标志）
+            if (state.routeTotalKm == null) {
                 Text("路线：未导入（右上角导入两步路 GPX）", style = MaterialTheme.typography.bodyMedium)
             } else {
                 Row(
@@ -259,7 +260,7 @@ private fun RouteCard(state: UiState, onToggleDirection: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("路线：${state.routeName}", fontWeight = FontWeight.Bold)
+                        Text("路线：${state.routeName ?: "未命名路线"}", fontWeight = FontWeight.Bold)
                         Text(
                             "总长 ${fmt1(state.routeTotalKm)} km" +
                                 (if (state.routeHasElevation) "" else " · 无海拔数据") +
@@ -417,7 +418,7 @@ private fun RoutePositionCard(state: UiState) {
 
                 RouteMatchStatus.NO_LOCATION ->
                     Text(
-                        if (state.routeName != null) "待定位（点击\"整理并问 ChatGPT\"会先更新位置）" else "未导入路线",
+                        if (state.routeTotalKm != null) "待定位（点击\"整理并问 ChatGPT\"会先更新位置）" else "未导入路线",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
